@@ -21,14 +21,19 @@
 
   description.txt FORMAT
     Line 1            -> the mod's title
+    (optional) tags: Weapons, QoL, Multiplayer   <- comma-separated, "category:" also works
     (blank line)
     everything after  -> the description (line breaks are preserved)
 
     Example:
       Grappling Hook Overhaul
-      
+      tags: Movement, QoL
+
       Adds a fully physics-based grappling hook with rope swing,
       wall-climb assist, and a rebindable launch key.
+
+    The tags line is optional — mods without one just won't show up under
+    any filter chip, and the search bar still matches their title/description.
 
   SETUP
     1. Edit the CONFIG block below with your GitHub username, repo name,
@@ -109,6 +114,77 @@
     font-size: 14px;
     margin-top: 10px;
   }
+
+  /* ---------- toolbar ---------- */
+  .toolbar{
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .toolbar.hidden{ display: none; }
+
+  #search-input{
+    width: 100%;
+    max-width: 360px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 14px;
+    padding: 11px 14px;
+    border-radius: 8px;
+    outline: none;
+    transition: border-color 180ms ease;
+  }
+  #search-input::placeholder{ color: var(--muted); }
+  #search-input:focus{ border-color: var(--accent-dim); }
+
+  .chip-row{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .chip{
+    font-family: 'Space Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.03em;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    padding: 7px 13px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+  }
+  .chip:hover{ color: var(--text); border-color: var(--accent-dim); }
+  .chip.active{
+    background: rgba(255,176,0,0.12);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .tag-pills{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: center;
+  }
+  .tag-pill{
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    background: rgba(79,214,190,0.1);
+    border: 1px solid rgba(79,214,190,0.25);
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .card .tag-pills{ margin-top: 8px; }
+  .modal-body .tag-pills{ justify-content: flex-start; }
 
   /* ---------- grid ---------- */
   main{
@@ -339,8 +415,17 @@
   <p class="subtitle">select a mod to view details and download</p>
 </header>
 
+<div class="toolbar hidden" id="toolbar">
+  <input type="search" id="search-input" placeholder="search mods…" autocomplete="off">
+  <div class="chip-row" id="chip-row"></div>
+</div>
+
 <main>
   <div id="grid" class="grid"></div>
+  <div id="nomatch-state" class="state hidden">
+    <span class="big">No mods match</span>
+    try a different search or tag
+  </div>
   <div id="loading-state" class="state">
     <div class="grid" id="skeleton-grid"></div>
   </div>
@@ -373,8 +458,8 @@
 <script>
   // ============ CONFIG — edit this ============
   const CONFIG = {
-    owner: "YOUR_GITHUB_USERNAME",   // e.g. "mikey"
-    repo: "YOUR_REPO_NAME",          // e.g. "my-game-mods"
+    owner: "ByteGames10101010",   // e.g. "mikey"
+    repo: "AccidentalMods.github.io",          // e.g. "my-game-mods"
     branch: "main",                  // branch mods are read from
     modsPath: ""                     // "" = repo root, or e.g. "mods"
   };
@@ -384,7 +469,11 @@
   const loadingEl = document.getElementById('loading-state');
   const emptyEl = document.getElementById('empty-state');
   const errorEl = document.getElementById('error-state');
+  const nomatchEl = document.getElementById('nomatch-state');
   const skeletonGrid = document.getElementById('skeleton-grid');
+  const toolbarEl = document.getElementById('toolbar');
+  const searchInput = document.getElementById('search-input');
+  const chipRow = document.getElementById('chip-row');
 
   const overlay = document.getElementById('overlay');
   const modalCoverWrap = document.getElementById('modal-cover-wrap');
@@ -397,6 +486,8 @@
 
   let mods = [];
   let activeMod = null;
+  let searchQuery = '';
+  let selectedTag = 'all';
 
   function apiUrl(path){
     const base = `https://api.github.com/repos/${CONFIG.owner}/${CONFIG.repo}/contents`;
@@ -426,9 +517,19 @@
     while (i < lines.length && lines[i].trim() === '') i++;
     const title = (lines[i] || 'Untitled Mod').trim();
     i++;
+
+    let tags = [];
+    let j = i;
+    while (j < lines.length && lines[j].trim() === '') j++;
+    const tagMatch = j < lines.length ? lines[j].match(/^(tags?|categor(?:y|ies)):\s*(.*)$/i) : null;
+    if (tagMatch){
+      tags = tagMatch[2].split(',').map(t => t.trim()).filter(Boolean);
+      i = j + 1;
+    }
+
     while (i < lines.length && lines[i].trim() === '') i++;
     const description = lines.slice(i).join('\n').trim();
-    return { title, description };
+    return { title, tags, description };
   }
 
   async function buildMod(dirItem){
@@ -450,16 +551,30 @@
 
     const descRes = await fetch(descFile.download_url);
     const descText = await descRes.text();
-    const { title, description } = parseDescriptionFile(descText);
+    const { title, tags, description } = parseDescriptionFile(descText);
 
     return {
       folder: dirItem.name,
       path: dirItem.path,
       title,
+      tags,
       description,
       coverUrl: coverFile ? coverFile.download_url : null,
       files: otherFiles.map(f => ({ name: f.name, url: f.download_url }))
     };
+  }
+
+  function tagPillsMarkup(tags){
+    if (!tags || !tags.length) return null;
+    const row = document.createElement('div');
+    row.className = 'tag-pills';
+    tags.forEach(t => {
+      const pill = document.createElement('span');
+      pill.className = 'tag-pill';
+      pill.textContent = t;
+      row.appendChild(pill);
+    });
+    return row;
   }
 
   function coverMarkup(url, title, big){
@@ -476,13 +591,13 @@
     return div;
   }
 
-  function renderGrid(){
+  function renderGrid(list){
     gridEl.innerHTML = '';
-    mods.forEach((mod, idx) => {
+    list.forEach((mod) => {
       const card = document.createElement('button');
       card.className = 'card';
       card.type = 'button';
-      card.addEventListener('click', () => openModal(idx));
+      card.addEventListener('click', () => openModal(mod));
 
       const coverWrap = document.createElement('div');
       coverWrap.className = 'cover-wrap';
@@ -494,12 +609,14 @@
 
       card.appendChild(coverWrap);
       card.appendChild(titleEl);
+      const pills = tagPillsMarkup(mod.tags);
+      if (pills) card.appendChild(pills);
       gridEl.appendChild(card);
     });
   }
 
-  function openModal(idx){
-    activeMod = mods[idx];
+  function openModal(mod){
+    activeMod = mod;
     modalCoverWrap.innerHTML = '';
     modalCoverWrap.appendChild(coverMarkup(activeMod.coverUrl, activeMod.title, true));
     modalFolder.textContent = activeMod.folder;
@@ -510,6 +627,12 @@
       : 'No extra files in this folder';
     modalDownload.disabled = activeMod.files.length === 0;
     modalDownload.textContent = 'Download files';
+
+    const existingPills = modalTitle.parentElement.querySelector('.tag-pills');
+    if (existingPills) existingPills.remove();
+    const pills = tagPillsMarkup(activeMod.tags);
+    if (pills) modalTitle.insertAdjacentElement('afterend', pills);
+
     overlay.classList.add('open');
     document.body.style.overflow = 'hidden';
   }
@@ -559,6 +682,59 @@
     }
   });
 
+  function collectTags(){
+    const set = new Set();
+    mods.forEach(m => m.tags.forEach(t => set.add(t)));
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }
+
+  function renderChips(){
+    const allTags = collectTags();
+    chipRow.innerHTML = '';
+    if (!allTags.length){
+      chipRow.style.display = 'none';
+      return;
+    }
+    chipRow.style.display = 'flex';
+
+    const makeChip = (label, value) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip' + (selectedTag === value ? ' active' : '');
+      b.textContent = label;
+      b.addEventListener('click', () => {
+        selectedTag = value;
+        renderChips();
+        applyFilters();
+      });
+      return b;
+    };
+
+    chipRow.appendChild(makeChip('All', 'all'));
+    allTags.forEach(t => chipRow.appendChild(makeChip(t, t)));
+  }
+
+  function applyFilters(){
+    const q = searchQuery.trim().toLowerCase();
+    const filtered = mods.filter(m => {
+      const matchesTag = selectedTag === 'all' || m.tags.includes(selectedTag);
+      const matchesQuery = !q
+        || m.title.toLowerCase().includes(q)
+        || m.description.toLowerCase().includes(q)
+        || m.tags.some(t => t.toLowerCase().includes(q));
+      return matchesTag && matchesQuery;
+    });
+
+    renderGrid(filtered);
+    nomatchEl.classList.toggle('hidden', filtered.length !== 0);
+    gridEl.classList.toggle('hidden', filtered.length === 0);
+  }
+
+  searchInput.addEventListener('input', (e) => {
+    searchQuery = e.target.value;
+    applyFilters();
+  });
+
   function showSkeleton(){
     skeletonGrid.innerHTML = '';
     for (let i = 0; i < 6; i++){
@@ -572,7 +748,11 @@
     loadingEl.classList.toggle('hidden', state !== 'loading');
     emptyEl.classList.toggle('hidden', state !== 'empty');
     errorEl.classList.toggle('hidden', state !== 'error');
-    gridEl.classList.toggle('hidden', state !== 'ready');
+    toolbarEl.classList.toggle('hidden', state !== 'ready');
+    if (state !== 'ready'){
+      gridEl.classList.add('hidden');
+      nomatchEl.classList.add('hidden');
+    }
   }
 
   async function init(){
@@ -590,8 +770,9 @@
         showState('empty');
         return;
       }
-      renderGrid();
       showState('ready');
+      renderChips();
+      applyFilters();
     } catch (err) {
       console.error(err);
       const headline = document.getElementById('error-headline');
