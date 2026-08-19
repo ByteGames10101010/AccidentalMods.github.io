@@ -1,4 +1,77 @@
 <!DOCTYPE html>
+<!--
+  MOD LIBRARY — GitHub Pages mod browser
+  =======================================
+  HOW IT WORKS
+  This page has no backend. On load, it calls the public GitHub API to list
+  folders in your repo, then treats any folder that contains a
+  "description.txt" as a mod. "cover.png" is the card thumbnail; any other
+  image files (png/jpg/jpeg/gif/webp) become a clickable gallery in the
+  mod's popup. Everything else in the mod's root folder gets bundled
+  client-side into a .zip when the download button is clicked.
+
+  REPO LAYOUT IT EXPECTS (recommended — resources kept separate)
+    your-repo/
+      index.html          <- this file
+      Some Cool Mod/
+        resources/          <- name set by CONFIG.resourcesFolder
+          description.txt   <- required (see format below)
+          cover.png          <- optional, main thumbnail on the card + modal
+          screenshot1.png    <- optional, extra images become a gallery
+        mod.zip / files…   <- everything in the mod's root gets zipped for
+                              download — keep only real mod files here
+      Another Mod/
+        resources/
+          description.txt
+          ...
+        ...
+
+  LEGACY LAYOUT (still supported — resources mixed in with files)
+    If a mod folder has no "resources" subfolder, the page falls back to
+    reading description.txt/cover.png/images straight out of the mod's
+    root folder, and treats every other file there as downloadable — same
+    behavior as before this option existed.
+
+    Some Cool Mod/
+      description.txt
+      cover.png
+      mod.zip / files…
+
+  description.txt FORMAT
+    Line 1              -> the mod's title
+    (optional) tags: Weapons, QoL, Multiplayer   <- comma-separated, "category:" also works
+    (optional) by: Your Name                     <- "creator:" or "author:" also work
+    (blank line)
+    everything after    -> the description (line breaks are preserved)
+
+    The tags and "by" lines are both optional and can appear in either
+    order. Mods without them just won't show a creator credit or filter
+    chip — search and the rest of the page still work fine.
+
+    Example:
+      Grappling Hook Overhaul
+      tags: Movement, QoL
+      by: Mikey
+
+      Adds a fully physics-based grappling hook with rope swing,
+      wall-climb assist, and a rebindable launch key.
+
+  SETUP
+    1. Edit the CONFIG block below with your GitHub username, repo name,
+       and branch.
+    2. If your mods live inside a subfolder (e.g. "mods/") instead of the
+       repo root, set modsPath accordingly.
+    3. Rename resourcesFolder if you'd rather call it something other than
+       "resources" (e.g. "meta", "info"). Leave it as-is if you're using
+       the legacy flat layout for some or all mods — both work at once.
+    4. Commit + push. GitHub Pages will serve this directly.
+
+  NOTE ON RATE LIMITS
+    Unauthenticated GitHub API calls are capped at 60/hour per visitor IP.
+    This page caches results in sessionStorage per visit to avoid burning
+    that budget on repeat loads/clicks. Do NOT put a personal access token
+    in this file — it's public, and anyone viewing source would get it.
+-->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -269,14 +342,12 @@
 
   .modal{
     width: 100%;
-    max-width: 720px;
+    max-width: 640px;
     max-height: 86vh;
     overflow-y: auto;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 14px;
-    display: grid;
-    grid-template-columns: 220px 1fr;
     position: relative;
     transform: scale(0.94) translateY(8px);
     transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -285,48 +356,118 @@
   .overlay.open .modal{ transform: scale(1) translateY(0); }
 
   @media (max-width: 560px){
-    .modal{ grid-template-columns: 1fr; max-height: 90vh; }
+    .modal{ max-height: 92vh; }
   }
 
+  /* Cover banner — locked to 16:9, object-fit:contain so the whole image
+     is always visible (never cropped), regardless of the source's actual
+     ratio. The mod packer app enforces 16:9 covers going in, so in
+     practice this renders edge-to-edge with no letterboxing. */
   .modal-cover{
+    width: 100%;
+    aspect-ratio: 16 / 9;
     background: var(--panel-2);
-    min-height: 200px;
+    border-radius: 14px 14px 0 0;
+    overflow: hidden;
     display: flex;
-    flex-direction: column;
   }
   .modal-cover img.modal-main-img{
     width: 100%;
-    flex: 1;
-    min-height: 0;
-    object-fit: cover;
+    height: 100%;
+    object-fit: contain;
     display: block;
   }
   .modal-cover .cover-placeholder{ flex: 1; font-size: 56px; }
 
+  .screenshots-label{
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
   .gallery-strip{
     display: flex;
-    gap: 6px;
-    padding: 8px;
-    overflow-x: auto;
-    background: var(--panel);
-    border-top: 1px solid var(--line);
+    flex-wrap: wrap;
+    gap: 8px;
   }
   .gallery-thumb{
     flex: 0 0 auto;
-    width: 40px;
-    height: 40px;
+    width: 76px;
+    height: 52px;
     border-radius: 6px;
     overflow: hidden;
     border: 1px solid var(--line);
     padding: 0;
     cursor: pointer;
     background: none;
-    opacity: 0.55;
-    transition: opacity 150ms ease, border-color 150ms ease;
+    opacity: 0.75;
+    transition: opacity 150ms ease, border-color 150ms ease, transform 150ms ease;
   }
   .gallery-thumb img{ width: 100%; height: 100%; object-fit: cover; display: block; }
-  .gallery-thumb:hover{ opacity: 0.85; }
-  .gallery-thumb.active{ opacity: 1; border-color: var(--accent); }
+  .gallery-thumb:hover{ opacity: 1; border-color: var(--accent-dim); transform: translateY(-2px); }
+
+  /* ---------- lightbox (full screenshot viewer) ---------- */
+  .lightbox{
+    position: fixed; inset: 0;
+    background: rgba(4,5,6,0.92);
+    display: flex; align-items: center; justify-content: center;
+    padding: 40px;
+    z-index: 60;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 200ms ease;
+  }
+  .lightbox.open{ opacity: 1; pointer-events: auto; }
+  .lightbox img{
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  }
+  .lightbox-close{
+    position: absolute;
+    top: 20px; right: 24px;
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 18px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .lightbox-close:hover{ border-color: var(--accent-dim); color: var(--accent); }
+  .lightbox-nav{
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 20px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .lightbox-nav:hover{ border-color: var(--accent-dim); color: var(--accent); }
+  .lightbox-nav.prev{ left: 20px; }
+  .lightbox-nav.next{ right: 20px; }
+  .lightbox-counter{
+    position: absolute;
+    bottom: 22px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: 'Space Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+    background: rgba(0,0,0,0.5);
+    padding: 4px 12px;
+    border-radius: 999px;
+  }
 
   .modal-body{
     padding: 28px 26px;
@@ -446,12 +587,24 @@
       <div class="modal-creator hidden" id="modal-creator"></div>
       <div class="tag-pills hidden" id="modal-tags"></div>
       <p class="modal-desc" id="modal-desc"></p>
+      <div id="screenshots-section" class="hidden">
+        <div class="screenshots-label">Screenshots</div>
+        <div class="gallery-strip" id="gallery-strip"></div>
+      </div>
       <div class="modal-actions">
         <button class="btn-download" id="modal-download">Download files</button>
         <span class="modal-status" id="modal-status"></span>
       </div>
     </div>
   </div>
+</div>
+
+<div class="lightbox" id="lightbox">
+  <button class="lightbox-close" id="lightbox-close" aria-label="Close">×</button>
+  <button class="lightbox-nav prev" id="lightbox-prev" aria-label="Previous">‹</button>
+  <img id="lightbox-img" alt="">
+  <button class="lightbox-nav next" id="lightbox-next" aria-label="Next">›</button>
+  <div class="lightbox-counter" id="lightbox-counter"></div>
 </div>
 
 <script>
@@ -485,11 +638,22 @@
   const modalDownload = document.getElementById('modal-download');
   const modalStatus = document.getElementById('modal-status');
   const modalClose = document.getElementById('modal-close');
+  const screenshotsSection = document.getElementById('screenshots-section');
+  const galleryStripEl = document.getElementById('gallery-strip');
+
+  const lightbox = document.getElementById('lightbox');
+  const lightboxImg = document.getElementById('lightbox-img');
+  const lightboxClose = document.getElementById('lightbox-close');
+  const lightboxPrevBtn = document.getElementById('lightbox-prev');
+  const lightboxNextBtn = document.getElementById('lightbox-next');
+  const lightboxCounter = document.getElementById('lightbox-counter');
 
   let mods = [];
   let activeMod = null;
   let searchQuery = '';
   let selectedTag = 'all';
+  let lightboxImages = [];
+  let lightboxIndex = 0;
 
   function apiUrl(path){
     const base = `https://api.github.com/repos/${CONFIG.owner}/${CONFIG.repo}/contents`;
@@ -680,34 +844,64 @@
     });
   }
 
-  // Builds the row of clickable thumbnails under the modal's main image.
-  // Only rendered when a mod has more than one image (cover + gallery).
-  function buildGalleryStrip(mod){
-    const allImages = [];
-    if (mod.coverUrl) allImages.push(mod.coverUrl);
-    (mod.gallery || []).forEach(g => allImages.push(g.url));
-    if (allImages.length < 2) return null;
+  // Renders the "Screenshots" thumbnail row from mod.gallery only — the
+  // cover image is deliberately excluded, since it's already shown as the
+  // fixed banner at the top of the modal (matches the mod.io-style split
+  // between a cover and a separate screenshot gallery).
+  function renderScreenshots(mod){
+    const gallery = mod.gallery || [];
+    galleryStripEl.innerHTML = '';
+    if (!gallery.length){
+      screenshotsSection.classList.add('hidden');
+      return;
+    }
+    screenshotsSection.classList.remove('hidden');
 
-    const strip = document.createElement('div');
-    strip.className = 'gallery-strip';
-    allImages.forEach((url, idx) => {
+    gallery.forEach((g, idx) => {
       const thumb = document.createElement('button');
       thumb.type = 'button';
-      thumb.className = 'gallery-thumb' + (idx === 0 ? ' active' : '');
+      thumb.className = 'gallery-thumb';
       const img = document.createElement('img');
-      img.src = url;
-      img.alt = mod.title;
+      img.src = g.url;
+      img.alt = `${mod.title} screenshot ${idx + 1}`;
       thumb.appendChild(img);
-      thumb.addEventListener('click', () => {
-        const mainImg = modalCoverWrap.querySelector('img.modal-main-img');
-        if (mainImg) mainImg.src = url;
-        strip.querySelectorAll('.gallery-thumb').forEach(t => t.classList.remove('active'));
-        thumb.classList.add('active');
-      });
-      strip.appendChild(thumb);
+      thumb.addEventListener('click', () => openLightbox(gallery.map(g2 => g2.url), idx));
+      galleryStripEl.appendChild(thumb);
     });
-    return strip;
   }
+
+  function openLightbox(images, startIndex){
+    lightboxImages = images;
+    lightboxIndex = startIndex;
+    showLightboxImage();
+    lightbox.classList.add('open');
+  }
+
+  function closeLightbox(){
+    lightbox.classList.remove('open');
+    lightboxImages = [];
+  }
+
+  function showLightboxImage(){
+    if (!lightboxImages.length) return;
+    lightboxImg.src = lightboxImages[lightboxIndex];
+    lightboxCounter.textContent = `${lightboxIndex + 1} / ${lightboxImages.length}`;
+    const multiple = lightboxImages.length > 1;
+    lightboxPrevBtn.style.display = multiple ? 'flex' : 'none';
+    lightboxNextBtn.style.display = multiple ? 'flex' : 'none';
+    lightboxCounter.style.display = multiple ? 'block' : 'none';
+  }
+
+  function lightboxStep(delta){
+    if (!lightboxImages.length) return;
+    lightboxIndex = (lightboxIndex + delta + lightboxImages.length) % lightboxImages.length;
+    showLightboxImage();
+  }
+
+  lightboxClose.addEventListener('click', closeLightbox);
+  lightboxPrevBtn.addEventListener('click', () => lightboxStep(-1));
+  lightboxNextBtn.addEventListener('click', () => lightboxStep(1));
+  lightbox.addEventListener('click', (e) => { if (e.target === lightbox) closeLightbox(); });
 
   function fillTagPills(container, tags){
     container.innerHTML = '';
@@ -727,12 +921,15 @@
   function openModal(mod){
     activeMod = mod;
 
+    // Cover banner — locked to 16:9 with object-fit:contain, so the full
+    // image is always visible (the packer app enforces 16:9 covers going
+    // in, so this shows edge-to-edge with no letterboxing in practice).
     modalCoverWrap.innerHTML = '';
     const mainCover = coverMarkup(activeMod.coverUrl, activeMod.title, true);
     if (mainCover.tagName === 'IMG') mainCover.classList.add('modal-main-img');
     modalCoverWrap.appendChild(mainCover);
-    const strip = buildGalleryStrip(activeMod);
-    if (strip) modalCoverWrap.appendChild(strip);
+
+    renderScreenshots(activeMod);
 
     modalFolder.textContent = activeMod.folder;
     modalTitle.textContent = activeMod.title;
@@ -765,7 +962,15 @@
 
   modalClose.addEventListener('click', closeModal);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (lightbox.classList.contains('open')){
+      if (e.key === 'Escape') closeLightbox();
+      else if (e.key === 'ArrowLeft') lightboxStep(-1);
+      else if (e.key === 'ArrowRight') lightboxStep(1);
+      return;
+    }
+    if (e.key === 'Escape') closeModal();
+  });
 
   modalDownload.addEventListener('click', async () => {
     if (!activeMod || !activeMod.files.length) return;
